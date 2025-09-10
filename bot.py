@@ -1,39 +1,21 @@
 import os
 import requests
-import torch
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from supabase import create_client, Client
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # ==================== تنظیمات توکن‌ها ====================
-BOT_TOKEN = os.environ.get('BOT_TOKEN')  # توکن ربات تلگرام
-HF_TOKEN = os.environ.get('HF_TOKEN')    # توکن Hugging Face
-SUPABASE_URL = os.environ.get('SUPABASE_URL')  # URL سوپابیس
-SUPABASE_KEY = os.environ.get('SUPABASE_KEY')  # توکن API سوپابیس
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+HF_TOKEN = os.environ.get('HF_TOKEN')
+SUPABASE_URL = os.environ.get('SUPABASE_URL')
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 
-# ==================== بررسی توکن‌ها ====================
 if not all([BOT_TOKEN, HF_TOKEN, SUPABASE_URL, SUPABASE_KEY]):
     raise ValueError("لطفاً همه متغیرهای محیطی را تنظیم کنید")
 
 # ==================== راه‌اندازی کلاینت‌ها ====================
-# سوپابیس
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# هوش مصنوعی StepFun
-try:
-    print("🌀 در حال بارگذاری مدل StepFun...")
-    model = AutoModelForCausalLM.from_pretrained(
-        "stepfun-ai/Step-Audio-2-mini", 
-        trust_remote_code=True, 
-        torch_dtype="auto"
-    )
-    tokenizer = AutoTokenizer.from_pretrained("stepfun-ai/Step-Audio-2-mini")
-    print("✅ مدل StepFun بارگذاری شد")
-except Exception as e:
-    print(f"❌ خطا در بارگذاری مدل: {e}")
-    model = None
-    tokenizer = None
+print("✅ سوپابیس متصل شد")
 
 # ==================== توابع دیتابیس ====================
 async def save_user(user_id: int, username: str, first_name: str, last_name: str):
@@ -47,8 +29,7 @@ async def save_user(user_id: int, username: str, first_name: str, last_name: str
                 "username": username,
                 "first_name": first_name,
                 "last_name": last_name or "",
-                "message_count": 0,
-                "created_at": "now()"
+                "message_count": 0
             }).execute()
             print(f"✅ کاربر جدید ذخیره شد: {user_id}")
     except Exception as e:
@@ -60,8 +41,7 @@ async def save_message(user_id: int, message_text: str, role: str = "user"):
         supabase.table("messages").insert({
             "user_id": user_id,
             "message_text": message_text,
-            "role": role,
-            "created_at": "now()"
+            "role": role
         }).execute()
         
         # آپدیت تعداد پیام‌های کاربر
@@ -86,61 +66,35 @@ async def get_user_history(user_id: int, limit: int = 6):
         return []
 
 # ==================== توابع هوش مصنوعی ====================
-def generate_stepfun_response(prompt: str, history: list = None):
-    """تولید پاسخ با StepFun AI"""
+def generate_ai_response(prompt: str, history: list = None):
+    """تولید پاسخ با هوش مصنوعی"""
     try:
-        if model is None or tokenizer is None:
-            return "مدل هوش مصنوعی در دسترس نیست"
-        
-        # ساخت متن ورودی با تاریخچه
-        if history:
-            conversation = "\n".join([f"{'User' if msg['role'] == 'user' else 'Assistant'}: {msg['message_text']}" for msg in history])
-            full_prompt = f"{conversation}\nUser: {prompt}\nAssistant:"
-        else:
-            full_prompt = f"User: {prompt}\nAssistant:"
-        
-        # توکنایز و تولید پاسخ
-        inputs = tokenizer.encode(full_prompt, return_tensors="pt")
-        
-        with torch.no_grad():
-            outputs = model.generate(
-                inputs,
-                max_length=500,
-                temperature=0.7,
-                do_sample=True,
-                pad_token_id=tokenizer.eos_token_id
-            )
-        
-        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        
-        # استخراج فقط پاسخ آخر
-        if "Assistant:" in response:
-            response = response.split("Assistant:")[-1].strip()
-        
-        return response
-        
-    except Exception as e:
-        print(f"❌ خطا در تولید پاسخ: {e}")
-        return "متأسفم، در پردازش مشکلی پیش آمد"
-
-def generate_huggingface_response(prompt: str):
-    """تولید پاسخ با Hugging Face (fallback)"""
-    try:
+        # استفاده از Hugging Face API
         url = "https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium"
         headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-        data = {"inputs": prompt, "parameters": {"max_length": 100}}
+        
+        # ساخت prompt با تاریخچه
+        if history:
+            conversation = "\n".join([f"{msg['message_text']}" for msg in history])
+            full_prompt = f"{conversation}\n{prompt}"
+        else:
+            full_prompt = prompt
+            
+        data = {"inputs": full_prompt, "parameters": {"max_length": 150}}
         
         response = requests.post(url, headers=headers, json=data, timeout=30)
         
         if response.status_code == 200:
             result = response.json()
             if isinstance(result, list) and len(result) > 0:
-                return result[0].get('generated_text', 'پاسخ نامعلوم')
+                return result[0].get('generated_text', 'پاسخ نامعلوم').split('\n')[-1]
         return "پاسخ نامعلوم"
+        
     except Exception as e:
-        return f"خطا در اتصال: {str(e)}"
+        print(f"❌ خطا در تولید پاسخ: {e}")
+        return "متأسفم، در پردازش مشکلی پیش آمد"
 
-# =================═ دستورات ربات ====================
+# ==================== دستورات ربات ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """دستور شروع"""
     user = update.effective_user
@@ -148,7 +102,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     welcome_text = (
         "👋 سلام! به ربات هوشمند خوش آمدید!\n\n"
-        "من با هوش مصنوعی StepFun کار می‌کنم و حافظه دارم!\n"
+        "من با هوش مصنوعی کار می‌کنم و حافظه دارم!\n"
         "هر پیامی بفرستید با توجه به تاریخچه گفتگو پاسخ می‌دم."
     )
     await update.message.reply_text(welcome_text)
@@ -171,12 +125,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         history = await get_user_history(user.id)
         print(f"📖 تاریخچه کاربر: {len(history)} پیام")
         
-        # تولید پاسخ با StepFun
-        bot_response = generate_stepfun_response(user_text, history)
-        
-        # اگر StepFun جواب نداد، از Hugging Face استفاده کن
-        if not bot_response or "پاسخ نامعلوم" in bot_response:
-            bot_response = generate_huggingface_response(user_text)
+        # تولید پاسخ
+        bot_response = generate_ai_response(user_text, history)
         
         # ذخیره پیام کاربر و پاسخ ربات
         await save_message(user.id, user_text, "user")
@@ -195,7 +145,7 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history = await get_user_history(user.id, 10)
     
     response = "📖 آخرین گفتگوهای شما:\n\n"
-    for msg in history[-5:]:  # فقط ۵ تا آخر
+    for msg in history[-5:]:
         role_icon = "👤" if msg['role'] == 'user' else "🤖"
         response += f"{role_icon} {msg['message_text']}\n"
         response += "─" * 30 + "\n"
@@ -217,16 +167,12 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # دستورات
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("history", history_cmd))
     application.add_handler(CommandHandler("stats", stats_cmd))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("🚀 ربات هوشمند با حافظه شروع به کار کرد!")
-    print("📊 همه پیام‌ها در Supabase ذخیره می‌شوند")
-    print("🧠 از مدل StepFun AI استفاده می‌کند")
-    
     application.run_polling()
 
 if __name__ == '__main__':
