@@ -3,7 +3,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from supabase import create_client, Client
 from openai import OpenAI
-from datetime import datetime
+import json
 
 # دریافت توکن‌ها
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
@@ -15,92 +15,106 @@ SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 client = OpenAI(base_url="https://router.huggingface.co/v1", api_key=HF_TOKEN)
 
-async def save_message(user_id: int, message_text: str, bot_response: str = None):
+async def save_message(user_id: int, content: str, role: str = "user"):
     """ذخیره پیام در دیتابیس"""
     try:
         supabase.table("messages").insert({
             "user_id": user_id,
-            "message_text": message_text,
-            "bot_response": bot_response
+            "message_text": content,
+            "role": role
         }).execute()
     except Exception as e:
         print(f"خطا در ذخیره پیام: {e}")
 
-async def save_user(update: Update):
-    """ذخیره کاربر"""
-    user = update.effective_user
+async def get_chat_history(user_id: int, limit: int = 10):
+    """دریافت تاریخچه گفتگوی کاربر"""
     try:
-        existing_user = supabase.table("users").select("*").eq("user_id", user.id).execute()
-        
-        if not existing_user.data:
-            supabase.table("users").insert({
-                "user_id": user.id,
-                "username": user.username,
-                "first_name": user.first_name,
-                "last_name": user.last_name
-            }).execute()
+        response = supabase.table("messages").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(limit).execute()
+        return response.data
     except Exception as e:
-        print(f"خطا در ذخیره کاربر: {e}")
+        print(f"خطا در دریافت تاریخچه: {e}")
+        return []
 
-def query_ai(prompt: str) -> str:
-    """پرسش از هوش مصنوعی"""
-    try:
-        completion = client.chat.completions.create(
-            model="moonshotai/Kimi-K2-Instruct-0905:together",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=500
-        )
-        return completion.choices[0].message.content
-    except Exception as e:
-        return f"خطا: {str(e)}"
+async def build_conversation_context(user_id: int, new_message: str):
+    """ساخت زمینه گفتگو با تاریخچه"""
+    history = await get_chat_history(user_id)
+    
+    # مرتب کردن از قدیمی به جدید
+    history.sort(key=lambda x: x['created_at'])
+    
+    messages = []
+    
+    # اضافه کردن پیام‌های تاریخی
+    for msg in history:
+        messages.append({
+            "role": msg['role'],
+            "content": msg['message_text']
+        })
+    
+    # اضافه کردن پیام جدید کاربر
+    messages.append({
+        "role": "user",
+        "content": new_message
+    })
+    
+    return messages
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پردازش پیام کاربر"""
+    """پردازش پیام با حافظه"""
     user = update.effective_user
     user_text = update.message.text
     
-    await save_user(update)
     await update.message.reply_chat_action("typing")
     
-    # دریافت پاسخ از هوش مصنوعی
-    bot_response = query_ai(user_text)
-    
-    # ذخیره پیام کاربر و پاسخ ربات
-    await save_message(user.id, user_text, bot_response)
-    
-    await update.message.reply_text(bot_response[:4000])
-
-async def all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """مشاهده تمام پیام‌ها (فقط برای ادمین)"""
     try:
-        # دریافت تمام پیام‌ها
-        messages = supabase.table("messages").select("*, users(username)").execute()
+        # ساخت زمینه گفتگو با تاریخچه
+        conversation_context = await build_conversation_context(user.id, user_text)
         
-        response = "📋 لیست پیام‌ها:\n\n"
-        for msg in messages.data:
-            response += f"👤 @{msg['users']['username']}\n"
-            response += f"💬 {msg['message_text']}\n"
-            response += f"🤖 {msg['bot_response']}\n"
-            response += f"⏰ {msg['created_at']}\n"
-            response += "─" * 30 + "\n"
+        # ارسال به هوش مصنوعی با تاریخچه
+        completion = client.chat.completions.create(
+            model="moonshotai/Kimi-K2-Instruct-0905:together",
+            messages=conversation_context,
+            max_tokens=500,
+            temperature=0.7
+        )
         
-        await update.message.reply_text(response[:4000])
+        bot_response = completion.choices[0].message.content
         
+        # ذخیره پیام کاربر
+        await save_message(user.id, user_text, "user")
+        
+        # ذخیره پاسخ ربات
+        await save_message(user.id, bot_response, "assistant")
+        
+        await update.message.reply_text(bot_response[:4000])
+        
+    except Exception as e:
+        error_msg = f"خطا: {str(e)}"
+        await update.message.reply_text(error_msg)
+        await save_message(user.id, user_text, "user")
+        await save_message(user.id, error_msg, "system")
+
+async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """پاک کردن تاریخچه کاربر"""
+    try:
+        user_id = update.effective_user.id
+        supabase.table("messages").delete().eq("user_id", user_id).execute()
+        await update.message.reply_text("✅ تاریخچه گفتگوی شما پاک شد!")
     except Exception as e:
         await update.message.reply_text(f"خطا: {str(e)}")
 
-async def user_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """مشاهده پیام‌های کاربر خاص"""
+async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش تاریخچه کاربر"""
     try:
         user_id = update.effective_user.id
-        messages = supabase.table("messages").select("*").eq("user_id", user_id).execute()
+        history = await get_chat_history(user_id, 20)
         
-        response = f"📋 پیام‌های شما:\n\n"
-        for msg in messages.data:
-            response += f"💬 {msg['message_text']}\n"
-            response += f"🤖 {msg['bot_response']}\n"
-            response += f"⏰ {msg['created_at']}\n"
-            response += "─" * 20 + "\n"
+        response = "📖 تاریخچه گفتگوی شما:\n\n"
+        for msg in reversed(history):  # نمایش از قدیمی به جدید
+            role_icon = "👤" if msg['role'] == 'user' else "🤖"
+            response += f"{role_icon} {msg['message_text']}\n"
+            response += f"⏰ {msg['created_at'][:16]}\n"
+            response += "─" * 30 + "\n"
         
         await update.message.reply_text(response[:4000])
         
@@ -111,11 +125,11 @@ async def user_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     
-    application.add_handler(CommandHandler("start", save_user))
-    application.add_handler(CommandHandler("mymessages", user_messages))
-    application.add_handler(CommandHandler("allmessages", all_messages))
+    application.add_handler(CommandHandler("clearhistory", clear_history))
+    application.add_handler(CommandHandler("history", show_history))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
+    print("✅ ربات با حافظه شروع به کار کرد...")
     application.run_polling()
 
 if __name__ == '__main__':
