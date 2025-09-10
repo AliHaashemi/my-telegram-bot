@@ -20,7 +20,7 @@ print("✅ همه توکن‌ها دریافت شدند")
 # کلاینت OpenAI برای Hugging Face
 client = OpenAI(
     base_url="https://router.huggingface.co/v1",
-    api_key='HF_TOKEN',
+    api_key="HF_TOKEN",
 )
 
 # ==================== توابع Supabase ====================
@@ -120,28 +120,16 @@ def generate_ai_response(user_text: str, history: list = None):
         })
         
         # ارسال به هوش مصنوعی
-        completion = client.chat.completions.create(
-            model="google/gemma-3-27b-it:nebius",
-           messages=[
+       completion = client.chat.completions.create(
+    model="moonshotai/Kimi-K2-Instruct-0905:together",
+    messages=[
         {
             "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": "Describe this image in one sentence."
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": "https://cdn.britannica.com/61/93061-050-99147DCE/Statue-of-Liberty-Island-New-York-Bay.jpg"
-                    }
-                }
-            ]
+            "content": "What is the capital of France?"
         }
     ],
 )
 
-        
         
         return completion.choices[0].message.content
         
