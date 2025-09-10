@@ -128,7 +128,7 @@ def generate_ai_response(user_text: str, history: list = None):
             "content": "What is the capital of France?"
         }
     ],
-)
+
 
         
         return completion.choices[0].message.content
