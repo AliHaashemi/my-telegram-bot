@@ -128,14 +128,13 @@ def generate_ai_response(user_text: str, history: list = None):
             "content": "What is the capital of France?"
         }
     ],
-
-
-        
+ 
         return completion.choices[0].message.content
         
     except Exception as e:
         print(f"❌ خطا در تولید پاسخ: {e}")
         return "متأسفم، در پردازش مشکلی پیش آمد"
+)
 
 # ==================== دستورات ربات ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
