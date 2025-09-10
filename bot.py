@@ -1,7 +1,8 @@
 import os
-import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from openai import OpenAI
+import requests
 
 # ==================== تنظیمات توکن‌ها ====================
 BOT_TOKEN = os.environ.get('BOT_TOKEN')  # توکن ربات تلگرام
@@ -14,6 +15,13 @@ if not all([BOT_TOKEN, HF_TOKEN, SUPABASE_URL, SUPABASE_KEY]):
     raise ValueError("❌ لطفاً همه متغیرهای محیطی را تنظیم کنید")
 
 print("✅ همه توکن‌ها دریافت شدند")
+
+# ==================== راه‌اندازی کلاینت‌ها ====================
+# کلاینت OpenAI برای Hugging Face
+client = OpenAI(
+    base_url="https://router.huggingface.co/v1",
+    api_key=HF_TOKEN,
+)
 
 # ==================== توابع Supabase ====================
 def supabase_request(table: str, method: str = "POST", data: dict = None, params: dict = None):
@@ -76,7 +84,7 @@ async def save_message(user_id: int, message_text: str, role: str = "user"):
             update_data = {"message_count": current_count + 1}
             supabase_request("users", "POST", update_data, params={"user_id": f"eq.{user_id}"})
 
-async def get_user_history(user_id: int, limit: int = 4):
+async def get_user_history(user_id: int, limit: int = 6):
     """دریافت تاریخچه گفتگوی کاربر"""
     try:
         params = {
@@ -91,40 +99,35 @@ async def get_user_history(user_id: int, limit: int = 4):
         return []
 
 # ==================== توابع هوش مصنوعی ====================
-def generate_ai_response(prompt: str, history: list = None):
-    """تولید پاسخ با Hugging Face API"""
+def generate_ai_response(user_text: str, history: list = None):
+    """تولید پاسخ با هوش مصنوعی Gemma"""
     try:
-        # استفاده از مدل مناسب برای متن
-        url = "https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium"
-        headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+        # ساخت messages با تاریخچه
+        messages = []
         
-        # ساخت متن با تاریخچه
-        full_prompt = prompt
+        # اضافه کردن تاریخچه گفتگو
         if history:
-            conversation = "\n".join([f"{msg['message_text']}" for msg in history])
-            full_prompt = f"{conversation}\nUser: {prompt}\nAssistant:"
+            for msg in history:
+                messages.append({
+                    "role": msg['role'],
+                    "content": msg['message_text']
+                })
         
-        data = {
-            "inputs": full_prompt,
-            "parameters": {
-                "max_length": 200,
-                "temperature": 0.7,
-                "do_sample": True
-            }
-        }
+        # اضافه کردن پیام جدید کاربر
+        messages.append({
+            "role": "user",
+            "content": user_text
+        })
         
-        response = requests.post(url, headers=headers, json=data, timeout=30)
+        # ارسال به هوش مصنوعی
+        completion = client.chat.completions.create(
+            model="google/gemma-3-27b-it:nebius",
+            messages=messages,
+            max_tokens=500,
+            temperature=0.7
+        )
         
-        if response.status_code == 200:
-            result = response.json()
-            if isinstance(result, list) and len(result) > 0:
-                response_text = result[0].get('generated_text', '')
-                # تمیز کردن پاسخ
-                if "Assistant:" in response_text:
-                    response_text = response_text.split("Assistant:")[-1].strip()
-                return response_text if response_text else "پاسخ نامعلوم"
-        
-        return "پاسخ نامعلوم"
+        return completion.choices[0].message.content
         
     except Exception as e:
         print(f"❌ خطا در تولید پاسخ: {e}")
@@ -138,12 +141,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     welcome_text = (
         "👋 سلام! به ربات هوشمند خوش آمدید!\n\n"
-        "من با هوش مصنوعی کار می‌کنم و حافظه دارم! 🧠\n"
+        "من با هوش مصنوعی Gemma-3 کار می‌کنم و حافظه دارم! 🧠\n"
         "هر پیامی بفرستید با توجه به تاریخچه گفتگو پاسخ می‌دم.\n\n"
         "✨ ویژگی‌ها:\n"
-        "• ذخیره تمام گفتگوها\n"
-        "• حافظه هوش مصنوعی\n"
-        "• پشتیبانی از همه کاربران"
+        "• ذخیره تمام گفتگوها در دیتابیس\n"
+        "• حافظه هوش مصنوعی برای هر کاربر\n"
+        "• پشتیبانی از چندین کاربر\n"
+        "• استفاده از مدل پیشرفته Gemma-3"
     )
     await update.message.reply_text(welcome_text)
     await save_message(user.id, "/start", "command")
@@ -228,8 +232,8 @@ def main():
     print("🚀 ربات هوشمند با ویژگی‌های زیر شروع به کار کرد:")
     print("   ✅ ذخیره کاربران و پیام‌ها در Supabase")
     print("   ✅ حافظه هوش مصنوعی برای هر کاربر")
+    print("   ✅ استفاده از مدل Gemma-3-27B")
     print("   ✅ پشتیبانی از چندین کاربر")
-    print("   ✅ دستورات مدیریتی")
     
     # اجرای ربات
     application.run_polling()
