@@ -1,30 +1,34 @@
 import os
 import requests
-import json
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ==================== تنظیمات توکن‌ها ====================
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-HF_TOKEN = os.environ.get('HF_TOKEN')
-SUPABASE_URL = os.environ.get('SUPABASE_URL')
-SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+BOT_TOKEN = os.environ.get('BOT_TOKEN')  # توکن ربات تلگرام
+HF_TOKEN = os.environ.get('HF_TOKEN')    # توکن Hugging Face
+SUPABASE_URL = os.environ.get('SUPABASE_URL')  # URL سوپابیس
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY')  # توکن API سوپابیس
 
-print("✅ توکن‌ها دریافت شدند")
+# بررسی وجود همه توکن‌ها
+if not all([BOT_TOKEN, HF_TOKEN, SUPABASE_URL, SUPABASE_KEY]):
+    raise ValueError("❌ لطفاً همه متغیرهای محیطی را تنظیم کنید")
 
-# ==================== توابع Supabase مستقیم ====================
-def supabase_request(table: str, method: str = "GET", data: dict = None):
-    """درخواست مستقیم به Supabase"""
+print("✅ همه توکن‌ها دریافت شدند")
+
+# ==================== توابع Supabase ====================
+def supabase_request(table: str, method: str = "POST", data: dict = None, params: dict = None):
+    """ارسال درخواست مستقیم به Supabase"""
     try:
         url = f"{SUPABASE_URL}/rest/v1/{table}"
         headers = {
             "apikey": SUPABASE_KEY,
             "Authorization": f"Bearer {SUPABASE_KEY}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal"
         }
         
         if method == "GET":
-            response = requests.get(url, headers=headers, timeout=10)
+            response = requests.get(url, headers=headers, params=params, timeout=10)
         elif method == "POST":
             response = requests.post(url, headers=headers, json=data, timeout=10)
         elif method == "DELETE":
@@ -32,70 +36,94 @@ def supabase_request(table: str, method: str = "GET", data: dict = None):
         else:
             return None
             
-        return response.json() if response.status_code == 200 else None
+        if response.status_code in [200, 201]:
+            return response.json() if response.content else True
+        return None
         
     except Exception as e:
         print(f"❌ خطا در Supabase: {e}")
         return None
 
 async def save_user(user_id: int, username: str, first_name: str, last_name: str):
-    """ذخیره کاربر جدید"""
+    """ذخیره کاربر جدید در دیتابیس"""
     user_data = {
         "user_id": user_id,
-        "username": username,
-        "first_name": first_name,
+        "username": username or "",
+        "first_name": first_name or "",
         "last_name": last_name or "",
         "message_count": 0
     }
     result = supabase_request("users", "POST", user_data)
     if result:
         print(f"✅ کاربر ذخیره شد: {user_id}")
+    else:
+        print(f"⚠️ کاربر از قبل وجود دارد: {user_id}")
 
 async def save_message(user_id: int, message_text: str, role: str = "user"):
-    """ذخیره پیام"""
+    """ذخیره پیام در دیتابیس"""
     message_data = {
         "user_id": user_id,
         "message_text": message_text,
         "role": role
     }
-    result = supabase_request("messages", "POST", message_data)
-    if result:
-        print(f"💾 پیام ذخیره شد: {user_id}")
+    if supabase_request("messages", "POST", message_data):
+        print(f"💾 پیام ذخیره شد برای کاربر {user_id}")
+        
+        # آپدیت تعداد پیام‌های کاربر
+        user_data = supabase_request("users", "GET", params={"user_id": f"eq.{user_id}"})
+        if user_data:
+            current_count = user_data[0].get("message_count", 0)
+            update_data = {"message_count": current_count + 1}
+            supabase_request("users", "POST", update_data, params={"user_id": f"eq.{user_id}"})
 
-async def get_user_history(user_id: int, limit: int = 6):
-    """دریافت تاریخچه کاربر"""
+async def get_user_history(user_id: int, limit: int = 4):
+    """دریافت تاریخچه گفتگوی کاربر"""
     try:
-        url = f"{SUPABASE_URL}/rest/v1/messages?user_id=eq.{user_id}&order=created_at.desc&limit={limit}"
-        headers = {
-            "apikey": SUPABASE_KEY,
-            "Authorization": f"Bearer {SUPABASE_KEY}"
+        params = {
+            "user_id": f"eq.{user_id}",
+            "order": "created_at.desc",
+            "limit": str(limit)
         }
-        response = requests.get(url, headers=headers, timeout=10)
-        return response.json() if response.status_code == 200 else []
+        history = supabase_request("messages", "GET", params=params) or []
+        return history[::-1]  # برگرداندن از قدیمی به جدید
     except Exception as e:
         print(f"❌ خطا در دریافت تاریخچه: {e}")
         return []
 
 # ==================== توابع هوش مصنوعی ====================
 def generate_ai_response(prompt: str, history: list = None):
-    """تولید پاسخ با هوش مصنوعی"""
+    """تولید پاسخ با Hugging Face API"""
     try:
+        # استفاده از مدل مناسب برای متن
         url = "https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium"
         headers = {"Authorization": f"Bearer {HF_TOKEN}"}
         
+        # ساخت متن با تاریخچه
         full_prompt = prompt
         if history:
-            conversation = "\n".join([msg['message_text'] for msg in history])
-            full_prompt = f"{conversation}\n{prompt}"
-            
-        data = {"inputs": full_prompt, "parameters": {"max_length": 150}}
+            conversation = "\n".join([f"{msg['message_text']}" for msg in history])
+            full_prompt = f"{conversation}\nUser: {prompt}\nAssistant:"
+        
+        data = {
+            "inputs": full_prompt,
+            "parameters": {
+                "max_length": 200,
+                "temperature": 0.7,
+                "do_sample": True
+            }
+        }
         
         response = requests.post(url, headers=headers, json=data, timeout=30)
         
         if response.status_code == 200:
             result = response.json()
             if isinstance(result, list) and len(result) > 0:
-                return result[0].get('generated_text', 'پاسخ نامعلوم')
+                response_text = result[0].get('generated_text', '')
+                # تمیز کردن پاسخ
+                if "Assistant:" in response_text:
+                    response_text = response_text.split("Assistant:")[-1].strip()
+                return response_text if response_text else "پاسخ نامعلوم"
+        
         return "پاسخ نامعلوم"
         
     except Exception as e:
@@ -104,27 +132,43 @@ def generate_ai_response(prompt: str, history: list = None):
 
 # ==================== دستورات ربات ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دستور شروع"""
+    """دستور شروع ربات"""
     user = update.effective_user
     await save_user(user.id, user.username, user.first_name, user.last_name)
     
-    welcome_text = "👋 سلام! به ربات هوشمند خوش آمدید!"
+    welcome_text = (
+        "👋 سلام! به ربات هوشمند خوش آمدید!\n\n"
+        "من با هوش مصنوعی کار می‌کنم و حافظه دارم! 🧠\n"
+        "هر پیامی بفرستید با توجه به تاریخچه گفتگو پاسخ می‌دم.\n\n"
+        "✨ ویژگی‌ها:\n"
+        "• ذخیره تمام گفتگوها\n"
+        "• حافظه هوش مصنوعی\n"
+        "• پشتیبانی از همه کاربران"
+    )
     await update.message.reply_text(welcome_text)
+    await save_message(user.id, "/start", "command")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """پردازش پیام‌های کاربر"""
     user = update.effective_user
     user_text = update.message.text
     
-    print(f"📩 پیام از {user.id}: {user_text}")
+    print(f"📩 پیام از کاربر {user.id}: {user_text}")
     
+    # ذخیره کاربر اگر وجود ندارد
     await save_user(user.id, user.username, user.first_name, user.last_name)
+    
     await update.message.reply_chat_action("typing")
     
     try:
+        # دریافت تاریخچه کاربر
         history = await get_user_history(user.id)
+        print(f"📖 تاریخچه کاربر: {len(history)} پیام")
+        
+        # تولید پاسخ با هوش مصنوعی
         bot_response = generate_ai_response(user_text, history)
         
+        # ذخیره پیام کاربر و پاسخ ربات
         await save_message(user.id, user_text, "user")
         await save_message(user.id, bot_response, "assistant")
         
@@ -135,14 +179,59 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"🚨 خطا: {error_msg}")
         await update.message.reply_text("⚡ مشکلی پیش آمد. لطفاً دوباره تلاش کنید.")
 
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """آمار کاربر"""
+    user = update.effective_user
+    try:
+        user_data = supabase_request("users", "GET", params={"user_id": f"eq.{user.id}"})
+        if user_data:
+            msg_count = user_data[0].get("message_count", 0)
+            await update.message.reply_text(f"📊 شما {msg_count} پیام فرستادید!")
+        else:
+            await update.message.reply_text("❌ اطلاعات شما یافت نشد")
+    except Exception as e:
+        await update.message.reply_text(f"❌ خطا: {str(e)}")
+
+async def my_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مشاهده تاریخچه کاربر"""
+    user = update.effective_user
+    try:
+        history = await get_user_history(user.id, 8)
+        
+        if not history:
+            await update.message.reply_text("📝 تاریخچه‌ای یافت نشد")
+            return
+            
+        response = "📖 آخرین گفتگوهای شما:\n\n"
+        for msg in history:
+            role_icon = "👤" if msg['role'] == 'user' else "🤖"
+            response += f"{role_icon} {msg['message_text']}\n"
+            response += "─" * 30 + "\n"
+        
+        await update.message.reply_text(response[:4000])
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ خطا: {str(e)}")
+
 # ==================== راه‌اندازی ربات ====================
 def main():
+    """تابع اصلی اجرای ربات"""
+    # ایجاد برنامه ربات
     application = Application.builder().token(BOT_TOKEN).build()
     
+    # اضافه کردن دستورات
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("history", my_history))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🚀 ربات هوشمند شروع به کار کرد!")
+    print("🚀 ربات هوشمند با ویژگی‌های زیر شروع به کار کرد:")
+    print("   ✅ ذخیره کاربران و پیام‌ها در Supabase")
+    print("   ✅ حافظه هوش مصنوعی برای هر کاربر")
+    print("   ✅ پشتیبانی از چندین کاربر")
+    print("   ✅ دستورات مدیریتی")
+    
+    # اجرای ربات
     application.run_polling()
 
 if __name__ == '__main__':
