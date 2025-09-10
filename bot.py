@@ -132,7 +132,7 @@ def generate_ai_response(user_text: str, history: list = None):
     except Exception as e:
         print(f"❌ خطا در تولید پاسخ: {e}")
         return "متأسفم، در پردازش مشکلی پیش آمد"
-)
+
 
 # ==================== دستورات ربات ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
