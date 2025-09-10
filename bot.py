@@ -20,7 +20,7 @@ print("✅ همه توکن‌ها دریافت شدند")
 # کلاینت OpenAI برای Hugging Face
 client = OpenAI(
     base_url="https://router.huggingface.co/v1",
-    api_key=os.environ['HF_TOKEN"],
+    api_key='HF_TOKEN',
 )
 
 # ==================== توابع Supabase ====================
