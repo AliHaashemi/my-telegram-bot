@@ -119,16 +119,14 @@ def generate_ai_response(user_text: str, history: list = None):
             "content": user_text
         })
         
-        # ارسال به هوش مصنوعی
-       completion = client.chat.completions.create(
-    model="moonshotai/Kimi-K2-Instruct-0905:together",
-    messages=[
-        {
-            "role": "user",
-            "content": "What is the capital of France?"
-        }
-    ],
- 
+# ارسال به هوش مصنوعی ← اینجا فاصله‌ها رو چک کن!
+        completion = client.chat.completions.create(  # خط 123
+            model="google/gemma-3-27b-it:nebius",
+            messages=messages,
+            max_tokens=500,
+            temperature=0.7
+        )
+        
         return completion.choices[0].message.content
         
     except Exception as e:
