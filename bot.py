@@ -142,8 +142,7 @@ def generate_ai_response(user_text: str, history: list = None):
 )
 
 print(completion.choices[0].message)
-           
-        )
+        
         
         return completion.choices[0].message.content
         
